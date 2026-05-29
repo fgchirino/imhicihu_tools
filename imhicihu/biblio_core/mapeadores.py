@@ -1,13 +1,23 @@
 import json
 import xml.etree.ElementTree as ET
+import re
 from imhicihu.biblio_core.marc_parsers import (
     limpiar_namespaces_xml,
     extraer_subcampo_marc,
     extraer_multiples_subcampos_marc
 )
 
-# Diccionario utilitario para normalizar códigos de idioma ISO a MARC (008/35-37)
 MAPA_IDIOMAS = {"es": "spa", "en": "eng", "fr": "fre", "pt": "por", "de": "ger", "it": "ita"}
+
+def _limpiar_texto(texto):
+    """Limpia caracteres problemáticos para evitar que Excel o Pandas rompan el TSV."""
+    if not isinstance(texto, str):
+        return ""
+    # 1. Reemplaza saltos de línea y tabuladores por espacios simples
+    texto = re.sub(r'[\n\r\t]+', ' ', texto)
+    # 2. Reemplaza comillas dobles por simples para evitar envolturas en el TSV
+    texto = texto.replace('"', "'")
+    return texto.strip()
 
 def _plantilla_datos():
     """Garantiza que todos los mapeadores devuelvan exactamente las mismas claves."""
@@ -29,7 +39,6 @@ def mapear_googlebooks(metadata_cruda):
     try:
         dict_gb = json.loads(metadata_cruda)
         
-        # Identificadores (EAV)
         lista_ids = []
         for id_obj in dict_gb.get("industryIdentifiers", []):
             tipo = id_obj.get("type", "").replace("_", "-") 
@@ -37,19 +46,19 @@ def mapear_googlebooks(metadata_cruda):
             lista_ids.append(f"[{tipo}] {val}")
         datos["identificadores"] = " | ".join(lista_ids)
         
-        datos["titulo_245a"] = dict_gb.get("title", "")
-        datos["subtitulo_245b"] = dict_gb.get("subtitle", "")
-        datos["entidades_personas"] = " | ".join(dict_gb.get("authors", []))
+        datos["titulo_245a"] = _limpiar_texto(dict_gb.get("title", ""))
+        datos["subtitulo_245b"] = _limpiar_texto(dict_gb.get("subtitle", ""))
+        datos["entidades_personas"] = " | ".join([_limpiar_texto(a) for a in dict_gb.get("authors", [])])
         
-        datos["pie_editor_260b"] = dict_gb.get("publisher", "")
+        datos["pie_editor_260b"] = _limpiar_texto(dict_gb.get("publisher", ""))
         datos["pie_fecha_260c"] = str(dict_gb.get("publishedDate", ""))[:4]
         if dict_gb.get("pageCount"):
             datos["descripcion_fisica_300"] = f"{dict_gb.get('pageCount')} p."
             
         temas = dict_gb.get("categories", [])
-        datos["descriptores_temas_650"] = " | ".join(temas) if temas else ""
+        datos["descriptores_temas_650"] = " | ".join([_limpiar_texto(t) for t in temas]) if temas else ""
         
-        desc = str(dict_gb.get("description", "")).replace("\n", " ").replace("\r", " ").strip()
+        desc = _limpiar_texto(dict_gb.get("description", ""))
         if desc:
             datos["notas_5XX"] = f"[500] {desc}"
             
@@ -72,17 +81,17 @@ def mapear_openlibrary(metadata_cruda):
         libro = dict_ol[llave] if isinstance(dict_ol[llave], dict) else dict_ol
         
         if "author_name" in libro or "docs" in dict_ol:
-            datos["titulo_245a"] = libro.get("title", "")
-            datos["entidades_personas"] = " | ".join(libro.get("author_name", []))
+            datos["titulo_245a"] = _limpiar_texto(libro.get("title", ""))
+            datos["entidades_personas"] = " | ".join([_limpiar_texto(a) for a in libro.get("author_name", [])])
             datos["pie_fecha_260c"] = str(libro.get("first_publish_year", ""))
             idiomas = libro.get("language", [])
             if idiomas:
                 datos["codigo_idioma"] = MAPA_IDIOMAS.get(idiomas[0].lower(), idiomas[0])
             return datos
             
-        datos["titulo_245a"] = libro.get("title", "")
-        datos["subtitulo_245b"] = libro.get("subtitle", "")
-        datos["mencion_resp_245c"] = libro.get("by_statement", "")
+        datos["titulo_245a"] = _limpiar_texto(libro.get("title", ""))
+        datos["subtitulo_245b"] = _limpiar_texto(libro.get("subtitle", ""))
+        datos["mencion_resp_245c"] = _limpiar_texto(libro.get("by_statement", ""))
         
         lista_ids = []
         for tipo, valores in libro.get("identifiers", {}).items():
@@ -93,30 +102,32 @@ def mapear_openlibrary(metadata_cruda):
         
         clasificaciones = libro.get("classifications", {})
         cdd = clasificaciones.get("dewey_decimal_class", [])
-        if cdd: datos["cdd"] = cdd[0]
+        if cdd: datos["cdd"] = _limpiar_texto(cdd[0])
         
-        autores = [a.get("name", "") for a in libro.get("authors", []) if "name" in a]
+        autores = [_limpiar_texto(a.get("name", "")) for a in libro.get("authors", []) if "name" in a]
         datos["entidades_personas"] = " | ".join(autores)
         
-        editores = [e.get("name", "") for e in libro.get("publishers", []) if "name" in e]
+        editores = [_limpiar_texto(e.get("name", "")) for e in libro.get("publishers", []) if "name" in e]
         datos["pie_editor_260b"] = " | ".join(editores)
         
-        lugares = [l.get("name", "") for l in libro.get("publish_places", []) if "name" in l]
+        lugares = [_limpiar_texto(l.get("name", "")) for l in libro.get("publish_places", []) if "name" in l]
         datos["pie_lugar_260a"] = " | ".join(lugares)
         
         datos["pie_fecha_260c"] = str(libro.get("publish_date", ""))
         
         paginas = str(libro.get("pagination", libro.get("number_of_pages", "")))
-        if paginas: datos["descripcion_fisica_300"] = f"{paginas} p."
-        
-        # Enrutamiento semántico de temas, personas y lugares geográficos
+        if paginas and re.search(r'\d', paginas): 
+            # Recorta espacios, puntos, letras 'p' y signos al final de la cadena
+            pag_limpio = re.sub(r'[\s;:\.pP]+$', '', _limpiar_texto(paginas))
+            datos["descripcion_fisica_300"] = f"{pag_limpio} p."
+            
         temas, geograficos, personas = [], [], []
         for item in libro.get("subjects", []):
-            if isinstance(item, dict) and "name" in item: temas.append(item["name"])
+            if isinstance(item, dict) and "name" in item: temas.append(_limpiar_texto(item["name"]))
         for item in libro.get("subject_people", []):
-            if isinstance(item, dict) and "name" in item: personas.append(item["name"])
+            if isinstance(item, dict) and "name" in item: personas.append(_limpiar_texto(item["name"]))
         for item in libro.get("subject_places", []):
-            if isinstance(item, dict) and "name" in item: geograficos.append(item["name"])
+            if isinstance(item, dict) and "name" in item: geograficos.append(_limpiar_texto(item["name"]))
             
         datos["descriptores_temas_650"] = " | ".join(temas)
         datos["descriptores_personas_600"] = " | ".join(personas)
@@ -125,15 +136,14 @@ def mapear_openlibrary(metadata_cruda):
         notas = libro.get("notes", "")
         if isinstance(notas, dict): notas = notas.get("value", "")
         if notas:
-            texto_nota = str(notas).replace("\n", " ").replace("\r", " ").strip()
-            datos["notas_5XX"] = f"[500] {texto_nota}"
+            datos["notas_5XX"] = f"[500] {_limpiar_texto(str(notas))}"
             
     except Exception as e:
         print(f"Error parseando OpenLibrary: {e}")
     return datos
 
 def mapear_lc(metadata_cruda):
-    """Extrae datos de la Library of Congress accediendo al nodo 'item'."""
+    """Extrae datos de la Library of Congress."""
     datos = _plantilla_datos()
     try:
         dict_lc = json.loads(metadata_cruda)
@@ -143,24 +153,24 @@ def mapear_lc(metadata_cruda):
             
         item = dict_lc.get("item", {})
         
-        datos["titulo_245a"] = item.get("title", dict_lc.get("title", ""))
-        datos["pie_fecha_260c"] = item.get("date", dict_lc.get("date", ""))
+        datos["titulo_245a"] = _limpiar_texto(item.get("title", dict_lc.get("title", "")))
+        datos["pie_fecha_260c"] = _limpiar_texto(item.get("date", dict_lc.get("date", "")))
         
         contrib = item.get("contributors", dict_lc.get("contributor", []))
-        datos["entidades_personas"] = " | ".join(contrib) if contrib else ""
+        datos["entidades_personas"] = " | ".join([_limpiar_texto(c) for c in contrib]) if contrib else ""
         
         pub = item.get("created_published", [])
-        datos["pie_editor_260b"] = " | ".join(pub) if pub else ""
+        datos["pie_editor_260b"] = " | ".join([_limpiar_texto(p) for p in pub]) if pub else ""
         
         medium = item.get("medium", [])
-        datos["descripcion_fisica_300"] = " | ".join(medium) if medium else ""
+        datos["descripcion_fisica_300"] = " | ".join([_limpiar_texto(m) for m in medium]) if medium else ""
         
         temas = item.get("subjects", dict_lc.get("subject", []))
-        datos["descriptores_temas_650"] = " | ".join(temas) if temas else ""
+        datos["descriptores_temas_650"] = " | ".join([_limpiar_texto(t) for t in temas]) if temas else ""
         
         notas_lista = []
         for nota in item.get("notes", []):
-            notas_lista.append(f"[500] {nota}")
+            notas_lista.append(f"[500] {_limpiar_texto(nota)}")
         datos["notas_5XX"] = " | ".join(notas_lista)
         
         lang = item.get("language", dict_lc.get("language", []))
@@ -168,14 +178,14 @@ def mapear_lc(metadata_cruda):
             datos["codigo_idioma"] = MAPA_IDIOMAS.get(lang[0].lower(), lang[0])
             
         call_num = item.get("call_number", [])
-        if call_num: datos["cdd"] = call_num[0]
+        if call_num: datos["cdd"] = _limpiar_texto(call_num[0])
         
     except Exception as e:
         print(f"Error parseando LC: {e}")
     return datos
 
 def mapear_dnb(metadata_cruda):
-    """Mapeador original DNB (XML) adaptado al esquema de 27 columnas."""
+    """Mapeador original DNB (XML) adaptado al esquema EAV."""
     datos = _plantilla_datos()
     try:
         dict_dnb = json.loads(metadata_cruda)
