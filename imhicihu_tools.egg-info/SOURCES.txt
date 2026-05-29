@@ -1,0 +1,11 @@
+setup.py
+imhicihu/__init__.py
+imhicihu/biblio_core/__init__.py
+imhicihu/biblio_core/api_clients.py
+imhicihu/biblio_core/json_parsers.py
+imhicihu/biblio_core/mapeadores.py
+imhicihu/biblio_core/marc_parsers.py
+imhicihu_tools.egg-info/PKG-INFO
+imhicihu_tools.egg-info/SOURCES.txt
+imhicihu_tools.egg-info/dependency_links.txt
+imhicihu_tools.egg-info/top_level.txt
